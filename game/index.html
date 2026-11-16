@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RINGFALL — a three.js tactical FPS</title>
+<style>
+  /* RINGFALL HUD shell. Palette: cold hull steel, glass panels, warden cyan
+     against reclaimer magenta, amber for the Leech and the clock. Every id
+     below is queried by game/src/hud.js or game/src/main.js — rename nothing
+     without touching those modules too. */
+  :root {
+    --hull: #060a14;
+    --glass: rgba(8, 14, 27, 0.88);
+    --edge: rgba(110, 180, 255, 0.22);
+    --ink: #e9f2ff;
+    --dim: #8ea2c3;
+    --cyan: #46e0d4;
+    --magenta: #ff5d8f;
+    --amber: #ffb454;
+    --violet: #9a6bff;
+    --good: #7dff9a;
+    --bad: #ff6b6b;
+    --steel: #6db3ff;
+    --ui: system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --num: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--hull); color: var(--ink); font-family: var(--ui); }
+  #game, #game canvas { position: fixed; inset: 0; display: block; }
+  .hidden { display: none !important; }
+  kbd {
+    font-family: var(--num); font-size: 11.5px; color: var(--ink);
+    border: 1px solid var(--edge); border-bottom-width: 2px; border-radius: 4px;
+    padding: 0 5px; background: var(--glass);
+  }
+
+  /* ---------- centre of the screen ---------- */
+  #crosshair { position: fixed; left: 50%; top: 50%; width: 30px; height: 30px; transform: translate(-50%, -50%); --gap: 7px; pointer-events: none; }
+  #crosshair i { position: absolute; background: var(--ink); opacity: .9; box-shadow: 0 0 3px #000; }
+  #crosshair i:nth-child(1) { left: 14px; top: 0; width: 2px; height: 9px; transform: translateY(calc(var(--gap) * -1)); }
+  #crosshair i:nth-child(2) { left: 14px; bottom: 0; width: 2px; height: 9px; transform: translateY(var(--gap)); }
+  #crosshair i:nth-child(3) { top: 14px; left: 0; height: 2px; width: 9px; transform: translateX(calc(var(--gap) * -1)); }
+  #crosshair i:nth-child(4) { top: 14px; right: 0; height: 2px; width: 9px; transform: translateX(var(--gap)); }
+  #crosshair .dot { position: absolute; left: 13.5px; top: 13.5px; width: 3px; height: 3px; border-radius: 50%; background: var(--ink); }
+  /* Hitmarker: an X that flashes on a hit, red on a kill. */
+  #hitmarker { position: fixed; left: 50%; top: 50%; width: 28px; height: 28px; transform: translate(-50%, -50%) rotate(45deg); opacity: 0; pointer-events: none; }
+  #hitmarker.on { opacity: 1; }
+  #hitmarker i { position: absolute; background: var(--amber); }
+  #hitmarker.kill i { background: var(--bad); }
+  #hitmarker i:nth-child(1) { left: 13px; top: 0; width: 2px; height: 8px; }
+  #hitmarker i:nth-child(2) { left: 13px; bottom: 0; width: 2px; height: 8px; }
+  #hitmarker i:nth-child(3) { top: 13px; left: 0; height: 2px; width: 8px; }
+  #hitmarker i:nth-child(4) { top: 13px; right: 0; height: 2px; width: 8px; }
+  /* Full-screen damage vignette and the scope mask (JS drives opacity). */
+  #hurt-vignette { position: fixed; inset: 0; pointer-events: none; background: radial-gradient(ellipse at center, transparent 52%, rgba(255, 40, 60, 0.42) 100%); opacity: 0; }
+  #scope { position: fixed; inset: 0; pointer-events: none; background: radial-gradient(circle at center, transparent 31%, rgba(2, 4, 10, 0.985) 32.5%); opacity: 0; }
+  #scope::before, #scope::after { content: ''; position: absolute; background: rgba(160, 220, 255, 0.5); }
+  #scope::before { left: 50%; top: 18%; bottom: 18%; width: 1px; }
+  #scope::after { top: 50%; left: 18%; right: 18%; height: 1px; }
+
+  /* ---------- top centre: round clock and score ---------- */
+  #topbar { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); display: flex; align-items: stretch; gap: 8px; font-family: var(--num); }
+  .side-score { background: var(--glass); border: 1px solid var(--edge); border-radius: 6px; padding: 5px 12px; text-align: center; min-width: 86px; }
+  .side-score .name { font-size: 10px; letter-spacing: 0.14em; color: var(--dim); font-family: var(--ui); }
+  .side-score .wins { font-size: 24px; line-height: 1.05; }
+  #score-wardens .wins { color: var(--cyan); }
+  #score-reclaimers .wins { color: var(--magenta); }
+  #clockbox { background: var(--glass); border: 1px solid var(--edge); border-radius: 6px; padding: 5px 14px; text-align: center; }
+  #clock { font-size: 24px; line-height: 1.05; }
+  #clock.low { color: var(--bad); }
+  #clock.docked { color: var(--amber); }
+  #round-label { font-size: 10px; letter-spacing: 0.14em; color: var(--dim); font-family: var(--ui); }
+  #pips { display: flex; gap: 3px; justify-content: center; margin-top: 3px; }
+  #pips i { width: 7px; height: 7px; border-radius: 50%; background: rgba(255, 255, 255, 0.14); }
+  #pips i.w { background: var(--cyan); }
+  #pips i.r { background: var(--magenta); }
+
+  /* ---------- bottom corners: vitals and weapon ---------- */
+  #vitals { position: fixed; left: 26px; bottom: 22px; width: 250px; background: var(--glass); border: 1px solid var(--edge); border-radius: 6px; padding: 10px 14px; }
+  .bar-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+  .bar-row .tag { font-size: 10px; letter-spacing: 0.12em; color: var(--dim); width: 44px; }
+  .bar { flex: 1; height: 9px; background: rgba(255, 255, 255, 0.10); border-radius: 3px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--cyan); transition: width 120ms linear; }
+  #armor-fill { background: var(--steel); }
+  .bar-row .val { font-family: var(--num); font-size: 14px; width: 30px; text-align: right; }
+  #money { font-family: var(--num); font-size: 19px; color: var(--good); margin-top: 5px; }
+  #money::before { content: 'CR '; color: var(--dim); font-size: 11px; letter-spacing: 0.1em; }
+  #kit-tag { font-size: 11px; color: var(--violet); min-height: 14px; }
+
+  #weaponbox { position: fixed; right: 26px; bottom: 22px; text-align: right; background: var(--glass); border: 1px solid var(--edge); border-radius: 6px; padding: 10px 14px; min-width: 210px; }
+  #weapon-name { font-size: 13px; letter-spacing: 0.1em; color: var(--dim); }
+  #ammo-line { font-family: var(--num); font-size: 42px; line-height: 1.05; }
+  #ammo-line.low { color: var(--amber); }
+  #ammo-line.out { color: var(--bad); }
+  #ammo-reserve { font-size: 17px; color: var(--dim); }
+  #slots { display: flex; gap: 5px; justify-content: flex-end; margin-top: 6px; }
+  #slots span { font-size: 10px; padding: 3px 7px; border: 1px solid var(--edge); border-radius: 4px; color: var(--dim); }
+  #slots span.on { color: var(--ink); border-color: var(--ink); background: rgba(255, 255, 255, 0.08); }
+
+  /* ---------- feed, banners, prompts, channel ---------- */
+  #killfeed { position: fixed; top: 14px; right: 16px; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; font-size: 12.5px; }
+  #killfeed .kf { background: var(--glass); border: 1px solid var(--edge); border-radius: 5px; padding: 4px 9px; }
+  #killfeed .kf b { font-weight: 600; }
+  .wn { color: var(--cyan); }
+  .rn { color: var(--magenta); }
+  #leech-tag {
+    position: fixed; top: 96px; left: 50%; transform: translateX(-50%);
+    font-size: 12.5px; letter-spacing: 0.1em; color: var(--amber);
+    background: var(--glass); border: 1px solid rgba(255, 180, 84, 0.4);
+    padding: 4px 10px; border-radius: 5px;
+  }
+  #banner { position: fixed; top: 21%; left: 0; right: 0; text-align: center; pointer-events: none; }
+  #banner-title { font-size: 44px; font-weight: 700; letter-spacing: 0.06em; text-shadow: 0 2px 18px rgba(0, 0, 0, 0.8); }
+  #banner-sub { font-size: 16px; color: var(--dim); margin-top: 4px; text-shadow: 0 1px 8px rgba(0, 0, 0, 0.9); }
+  #prompt { position: fixed; bottom: 27%; left: 0; right: 0; text-align: center; font-size: 15px; color: var(--ink); text-shadow: 0 1px 6px #000; }
+  #channel { position: fixed; bottom: 32%; left: 50%; transform: translateX(-50%); width: 320px; text-align: center; }
+  #channel-label { font-size: 13px; letter-spacing: 0.12em; margin-bottom: 6px; text-shadow: 0 1px 6px #000; }
+  #channel-bar { height: 8px; background: rgba(255, 255, 255, 0.14); border-radius: 4px; overflow: hidden; }
+  #channel-fill { height: 100%; width: 0%; background: var(--amber); }
+
+  /* ---------- sheets: buy menu and scoreboard ---------- */
+  .sheet { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(3, 6, 14, 0.55); }
+  .sheet-card { width: min(680px, 94vw); max-height: 92vh; overflow: auto; background: var(--glass); border: 1px solid var(--edge); border-radius: 10px; padding: 22px 26px; backdrop-filter: blur(3px); }
+  .sheet-card h2 { margin: 0 0 2px; font-size: 22px; letter-spacing: 0.04em; }
+  .sheet-card .sub { color: var(--dim); font-size: 13px; margin-bottom: 16px; }
+  .buy-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .buy-item { display: flex; justify-content: space-between; align-items: center; border: 1px solid var(--edge); border-radius: 6px; padding: 9px 12px; font-size: 14px; background: rgba(255, 255, 255, 0.03); cursor: pointer; }
+  .buy-item .key { font-family: var(--num); font-size: 11px; color: var(--dim); border: 1px solid var(--edge); border-radius: 3px; padding: 1px 5px; margin-right: 8px; }
+  .buy-item .price { font-family: var(--num); color: var(--good); }
+  .buy-item.owned { border-color: rgba(125, 255, 154, 0.45); }
+  .buy-item.cant .price { color: var(--bad); }
+  .buy-item small { display: block; color: var(--dim); font-size: 11.5px; margin-top: 2px; }
+  table.score { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  table.score th, table.score td { padding: 5px 8px; text-align: left; border-bottom: 1px solid rgba(255, 255, 255, 0.07); }
+  table.score th { color: var(--dim); font-weight: 500; font-size: 11px; letter-spacing: 0.1em; }
+  table.score td.num, table.score th.num { text-align: right; font-family: var(--num); }
+  tr.dead td { opacity: 0.45; }
+  tr.me td { background: rgba(255, 255, 255, 0.05); }
+
+  /* ---------- full-screen overlays: menu and end card ---------- */
+  .overlay { position: fixed; inset: 0; display: grid; place-items: center; background: linear-gradient(180deg, rgba(4, 7, 16, 0.55), rgba(4, 7, 16, 0.88)); padding: 20px; }
+  .panel-card { width: min(560px, 100%); background: var(--glass); border: 1px solid var(--edge); border-radius: 12px; padding: 34px 38px; }
+  .panel-card h1 { margin: 0; font-size: 52px; letter-spacing: 0.1em; font-weight: 800; line-height: 1; }
+  .panel-card h1 .fall { color: var(--magenta); }
+  .tagline { color: var(--dim); font-size: 15px; line-height: 1.55; margin: 14px 0 6px; }
+  .versus { display: flex; gap: 10px; margin: 16px 0; }
+  .versus div { flex: 1; border: 1px solid var(--edge); border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.5; }
+  .versus b { display: block; font-size: 14px; letter-spacing: 0.08em; }
+  .deck-notes { margin: 0 0 6px; padding-left: 18px; color: var(--dim); font-size: 13px; line-height: 1.6; }
+  .deck-notes b { color: var(--ink); font-weight: 600; }
+  #play-btn, #again-btn {
+    font: inherit; font-size: 17px; font-weight: 600; padding: 13px 22px;
+    border-radius: 8px; border: 1px solid var(--cyan); background: var(--cyan);
+    color: #04211e; cursor: pointer; width: 100%; margin-top: 10px;
+  }
+  #play-btn:hover, #again-btn:hover { background: var(--ink); border-color: var(--ink); }
+  .keys { list-style: none; margin: 18px 0 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; font-size: 13px; color: var(--dim); }
+  .keys kbd { margin-right: 3px; }
+  #end-title { font-size: 40px; }
+</style>
+</head>
+<body>
+<div id="game"></div>
+
+<!-- In-match HUD. hud.js fills every value; the shell only fixes the layout. -->
+<div id="hud" class="hidden">
+  <div id="crosshair"><i></i><i></i><i></i><i></i><span class="dot"></span></div>
+  <div id="hitmarker"><i></i><i></i><i></i><i></i></div>
+  <div id="hurt-vignette"></div>
+  <div id="scope"></div>
+
+  <div id="topbar">
+    <div class="side-score" id="score-wardens"><div class="name">WARDENS</div><div class="wins">0</div></div>
+    <div id="clockbox"><div id="clock">1:40</div><div id="round-label">ROUND 1</div><div id="pips"></div></div>
+    <div class="side-score" id="score-reclaimers"><div class="name">RECLAIMERS</div><div class="wins">0</div></div>
+  </div>
+
+  <div id="vitals">
+    <div class="bar-row"><span class="tag">HULL</span><div class="bar"><i id="hp-fill"></i></div><span class="val" id="hp-val">100</span></div>
+    <div class="bar-row"><span class="tag">PLATE</span><div class="bar"><i id="armor-fill"></i></div><span class="val" id="armor-val">0</span></div>
+    <div id="money">800</div>
+    <div id="kit-tag"></div>
+  </div>
+
+  <div id="weaponbox">
+    <div id="weapon-name">P3 WASP</div>
+    <div id="ammo-line"><span id="ammo-mag">12</span> <span id="ammo-reserve">/ 48</span></div>
+    <div id="slots"><span data-slot="primary">1 PRIMARY</span><span data-slot="sidearm">2 SIDEARM</span><span data-slot="knife">3 KNIFE</span><span data-slot="grenade">4 GRENADE</span></div>
+  </div>
+
+  <div id="killfeed"></div>
+  <div id="leech-tag" class="hidden">⚠ THE LEECH IS DOCKED — DRAINING CORE <span id="leech-site">A</span></div>
+  <div id="banner" class="hidden"><div id="banner-title"></div><div id="banner-sub"></div></div>
+  <div id="prompt" class="hidden"></div>
+  <div id="channel" class="hidden"><div id="channel-label">DOCKING THE LEECH</div><div id="channel-bar"><div id="channel-fill"></div></div></div>
+</div>
+
+<!-- Buy phase. hud.js renders the catalogue rows into #buy-grid. -->
+<div id="buymenu" class="sheet hidden">
+  <div class="sheet-card">
+    <h2>Requisition — <span id="buy-team">Wardens</span></h2>
+    <div class="sub">Buy phase ends in <span id="buy-clock">12</span>s · Credits <span id="buy-money">800</span> · Press the number key or click · <b>B</b> closes</div>
+    <div class="buy-grid" id="buy-grid"></div>
+  </div>
+</div>
+
+<!-- Scoreboard (Tab). hud.js renders the rows into #sb-body. -->
+<div id="scoreboard" class="sheet hidden">
+  <div class="sheet-card">
+    <h2>Vesper Ring — Deck 7</h2>
+    <div class="sub" id="sb-sub">Round 1 · First to 7</div>
+    <table class="score"><thead><tr><th>OPERATIVE</th><th>TEAM</th><th class="num">K</th><th class="num">D</th><th class="num">CR</th><th class="num">STATUS</th></tr></thead><tbody id="sb-body"></tbody></table>
+  </div>
+</div>
+
+<!-- Main menu. -->
+<div id="menu" class="overlay">
+  <section class="panel-card">
+    <h1>RING<span class="fall">FALL</span></h1>
+    <p class="tagline">The station Vesper Ring is falling out of its orbit and its reactor cores are worth a fortune in raw data. One crew boards to steal them. One crew is sworn to keep them. Twelve rounds decide who leaves with the ring.</p>
+    <div class="versus">
+      <div><b style="color:var(--magenta)">RECLAIMERS — attack</b>Carry the Leech, dock it on Core A or Core B, and hold the deck until the drain finishes.</div>
+      <div><b style="color:var(--cyan)">WARDENS — defend</b>Hold both cores. Purge a docked Leech before the drain completes, or run out the clock.</div>
+    </div>
+    <ul class="deck-notes">
+      <li><b>Deck 7</b> is a 3×3 grid of bays — every bay has three doors, so no route is a single corridor.</li>
+      <li><b>Core A (Helios)</b> burns amber, west bay; <b>Core B (Umbra)</b> burns violet, east bay.</li>
+      <li><b>First to 7 rounds</b> takes the ring. Win a round, bank the credits, buy better steel.</li>
+    </ul>
+    <button id="play-btn" type="button">Board the ring</button>
+    <ul class="keys">
+      <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>Shift</kbd> walk</li>
+      <li><kbd>Mouse</kbd> look · <kbd>Click</kbd> fire</li>
+      <li><kbd>R</kbd> reload · <kbd>Ctrl</kbd>/<kbd>C</kbd> crouch</li>
+      <li><kbd>1–4</kbd> weapons · <kbd>B</kbd> buy menu</li>
+      <li><kbd>E</kbd> dock / purge the Leech</li>
+      <li><kbd>Tab</kbd> scoreboard · <kbd>Space</kbd> jump</li>
+    </ul>
+  </section>
+</div>
+
+<!-- Match end. -->
+<div id="endcard" class="overlay hidden">
+  <section class="panel-card">
+    <h1 id="end-title">WARDENS HOLD THE RING</h1>
+    <p class="tagline" id="end-sub"></p>
+    <button id="again-btn" type="button">Play again</button>
+  </section>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/three.module.min.js"
+  }
+}
+</script>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
